@@ -5,7 +5,9 @@ services:
     env_file:
       - .env
     restart: always
+    network_mode: "host"
     logging:
       options:
         max-size: 1g
-    image: mhdzumair/mediaflow-proxy:latest
+    #image: mhdzumair/mediaflow-proxy:latest
+    build: .

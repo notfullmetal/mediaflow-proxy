@@ -23,7 +23,11 @@ class TransportConfig(BaseSettings):
     transport_routes: Dict[str, RouteConfig] = Field(
         default_factory=dict, description="Pattern-based route configuration"
     )
-    timeout: int = Field(30, description="Timeout for HTTP requests in seconds")
+    timeout: int = Field(30, description="Default timeout for HTTP requests in seconds")
+    connect_timeout: int = Field(10, description="Connect timeout in seconds")
+    read_timeout: int = Field(300, description="Read timeout for streaming operations in seconds (5 minutes)")
+    write_timeout: int = Field(30, description="Write timeout in seconds")
+    pool_timeout: int = Field(10, description="Pool timeout in seconds")
 
     def get_mounts(
         self, async_http: bool = True
@@ -45,6 +49,31 @@ class TransportConfig(BaseSettings):
             mounts["all://"] = transport_cls(proxy=self.proxy_url)
 
         return mounts
+        
+    def get_timeout_config(self, streaming: bool = False) -> httpx.Timeout:
+        """
+        Get timeout configuration optimized for the operation type.
+        
+        Args:
+            streaming (bool): Whether this is for streaming operations
+            
+        Returns:
+            httpx.Timeout: Configured timeout object
+        """
+        if streaming:
+            return httpx.Timeout(
+                connect=self.connect_timeout,
+                read=self.read_timeout,  # Much longer for streaming
+                write=self.write_timeout,
+                pool=self.pool_timeout
+            )
+        else:
+            return httpx.Timeout(
+                connect=self.connect_timeout,
+                read=self.timeout,  # Use default for non-streaming
+                write=self.write_timeout,
+                pool=self.pool_timeout
+            )
 
     class Config:
         env_file = ".env"
