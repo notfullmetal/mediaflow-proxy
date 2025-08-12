@@ -23,7 +23,7 @@ jobs:
         with:
           registry: docker.io
           username: notfullmetal
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          password: ${{ secrets.DOCKERPW }}
 
       - name: Set short SHA
         id: vars
