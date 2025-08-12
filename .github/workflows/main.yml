@@ -1,8 +1,8 @@
 name: MediaFlow Proxy CI/CD
 
 on:
-  release:
-    types: [ created ]
+  push:
+    branches: ["main"]
 
 jobs:
   mediaflow_proxy_docker_build:
@@ -21,57 +21,54 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: mhdzumair
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKERUN }}
+          password: ${{ secrets.DOCKERPW }}
 
-      - name: Build and push
-        id: docker_build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            mhdzumair/mediaflow-proxy:v${{ github.ref_name }}
-            mhdzumair/mediaflow-proxy:latest
+      - name: Set short SHA
+        id: vars
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
-      - name: Image digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
+      - name: Build & Push image
+        run: |
+          docker buildx build --platform linux/arm64,linux/amd64 \
+          -t notfullmetal/mediaflow-proxy:${{ env.SHORT_SHA }} \
+          -t notfullmetal/mediaflow-proxy:${{ github.ref_name }} \
+          -t notfullmetal/mediaflow-proxy:latest \
+          . --push
 
-  publish_to_pypi:
-    runs-on: ubuntu-latest
+  # publish_to_pypi:
+  #   runs-on: ubuntu-latest
 
-    steps:
-    - uses: actions/checkout@v4
+  #   steps:
+  #   - uses: actions/checkout@v4
 
-    - name: Extract version from tag
-      id: get_version
-      run: |
-        # Remove 'v' prefix if present (e.g., v1.2.3 -> 1.2.3)
-        VERSION=${GITHUB_REF_NAME#v}
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Extracted version: $VERSION"
+  #   - name: Extract version from tag
+  #     id: get_version
+  #     run: |
+  #       # Remove 'v' prefix if present (e.g., v1.2.3 -> 1.2.3)
+  #       VERSION=${GITHUB_REF_NAME#v}
+  #       echo "version=$VERSION" >> $GITHUB_OUTPUT
+  #       echo "Extracted version: $VERSION"
 
-    - name: Update version in pyproject.toml
-      run: |
-        # Update the version in pyproject.toml using sed
-        sed -i 's/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/' pyproject.toml
-        echo "Updated pyproject.toml version to: ${{ steps.get_version.outputs.version }}"
-        # Verify the change
-        grep '^version = ' pyproject.toml
+  #   - name: Update version in pyproject.toml
+  #     run: |
+  #       # Update the version in pyproject.toml using sed
+  #       sed -i 's/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/' pyproject.toml
+  #       echo "Updated pyproject.toml version to: ${{ steps.get_version.outputs.version }}"
+  #       # Verify the change
+  #       grep '^version = ' pyproject.toml
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
+  #   - name: Set up Python
+  #     uses: actions/setup-python@v5
+  #     with:
+  #       python-version: '3.13'
 
-    - name: Install dependencies
-      run: |
-        pip install poetry
-        poetry build
+  #   - name: Install dependencies
+  #     run: |
+  #       pip install poetry
+  #       poetry build
 
-    - name: Build and publish
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
+  #   - name: Build and publish
+  #     uses: pypa/gh-action-pypi-publish@release/v1
+  #     with:
+  #       password: ${{ secrets.PYPI_API_TOKEN }}
