@@ -31,10 +31,12 @@ class DownloadError(Exception):
         super().__init__(message)
 
 
-def create_httpx_client(follow_redirects: bool = True, **kwargs) -> httpx.AsyncClient:
-    """Creates an HTTPX client with configured proxy routing"""
+def create_httpx_client(follow_redirects: bool = True, streaming: bool = False, **kwargs) -> httpx.AsyncClient:
+    """Creates an HTTPX client with configured proxy routing and appropriate timeouts"""
     mounts = settings.transport_config.get_mounts()
-    kwargs.setdefault("timeout", settings.transport_config.timeout)
+    # Use appropriate timeout configuration based on operation type
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = settings.transport_config.get_timeout_config(streaming=streaming)
     client = httpx.AsyncClient(mounts=mounts, follow_redirects=follow_redirects, **kwargs)
     return client
 
@@ -81,14 +83,15 @@ async def fetch_with_retry(client, method, url, headers, follow_redirects=True, 
 
 
 class Streamer:
-    def __init__(self, client):
+    def __init__(self, client=None):
         """
         Initializes the Streamer with an HTTP client.
 
         Args:
-            client (httpx.AsyncClient): The HTTP client to use for streaming.
+            client (httpx.AsyncClient, optional): The HTTP client to use for streaming.
+                                                 If None, a streaming-optimized client will be created.
         """
-        self.client = client
+        self.client = client or create_httpx_client(streaming=True)
         self.response = None
         self.progress_bar = None
         self.bytes_transferred = 0
@@ -134,7 +137,7 @@ class Streamer:
 
     async def stream_content(self) -> typing.AsyncGenerator[bytes, None]:
         """
-        Streams the content from the response.
+        Streams the content from the response with improved error handling.
         """
         if not self.response:
             raise RuntimeError("No response available for streaming")
@@ -167,8 +170,13 @@ class Streamer:
                     self.bytes_transferred += len(chunk)
 
         except httpx.TimeoutException:
-            logger.warning("Timeout while streaming")
-            raise DownloadError(409, "Timeout while streaming")
+            logger.warning(f"Timeout while streaming (transferred {self.bytes_transferred} bytes)")
+            # Don't raise an error if we've already transferred some data
+            if self.bytes_transferred > 0:
+                logger.info(f"Partial streaming completed ({self.bytes_transferred} bytes transferred)")
+                return
+            else:
+                raise DownloadError(409, "Timeout while streaming - no data received")
         except httpx.RemoteProtocolError as e:
             # Special handling for connection closed errors
             if "peer closed connection without sending complete message body" in str(e):
@@ -189,6 +197,9 @@ class Streamer:
             logger.info("Streaming session stopped by the user")
         except Exception as e:
             logger.error(f"Error streaming content: {e}")
+            # Log additional context for debugging
+            logger.error(f"Bytes transferred before error: {self.bytes_transferred}")
+            logger.error(f"Response status: {getattr(self.response, 'status_code', 'unknown')}")
             raise
 
     @staticmethod
@@ -568,6 +579,33 @@ class EnhancedStreamingResponse(Response):
 
                 # Successfully streamed all content
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
+            except DownloadError as e:
+                # Handle streaming timeouts and errors gracefully
+                logger.warning(f"Download error during streaming: {e.message}")
+                if data_sent:
+                    # We've sent some data to the client, try to complete the response normally
+                    logger.info(f"Completing response after partial streaming ({self.actual_content_length} bytes)")
+                    try:
+                        await send({"type": "http.response.body", "body": b"", "more_body": False})
+                    except Exception as close_err:
+                        logger.warning(f"Could not finalize response after download error: {close_err}")
+                else:
+                    # No data was sent, send an error response
+                    logger.error(f"Download error before any data was streamed: {e.message}")
+                    # Reset status to error since we haven't sent data yet
+                    try:
+                        await send(
+                            {
+                                "type": "http.response.start",
+                                "status": e.status_code,
+                                "headers": [(b"content-type", b"text/plain")],
+                            }
+                        )
+                        error_message = f"Streaming error: {e.message}".encode("utf-8")
+                        await send({"type": "http.response.body", "body": error_message, "more_body": False})
+                    except Exception:
+                        # If we can't send an error response, just log it
+                        logger.exception("Failed to send error response for download error")
             except (httpx.RemoteProtocolError, h11._util.LocalProtocolError) as e:
                 # Handle connection closed errors
                 if data_sent:
